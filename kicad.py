@@ -637,7 +637,7 @@ class KicadFcad:
     def _initStackUp(self):
         if self.stackup is None:
             self.stackup = []
-            if hasattr(self.pcb.setup, 'stackup'):
+            if hasattr(self.pcb, 'setup') and hasattr(self.pcb.setup, 'stackup'):
                 try:
                     # If no stackup given by user, extract stack info from setup
                     offset = 0.0
@@ -1257,7 +1257,7 @@ class KicadFcad:
             self._makeEdgeCuts(self.module, 'fp', wires, non_closed)
             # try F.CrtYd and B.CrtYd
             self._makeEdgeCuts(self.module, 'fp', wires, non_closed, layers=(46, 47))
-        else:
+        elif hasattr(self.pcb, 'module'):
             for m in self.pcb.module:
                 self._makeEdgeCuts(m, 'fp', wires, non_closed, getattr(m, 'at', None))
 
@@ -1393,48 +1393,49 @@ class KicadFcad:
         skip_count = 0
         if not offset:
             offset = self.hole_size_offset;
-        for m in self.pcb.module:
-            m_at,m_angle = getAt(m)
-            for p in m.pad:
-                if 'drill' not in p:
-                    continue
-                if self.filterNets(p):
-                    skip_count += 1
-                    continue
-                if p[1]=='np_thru_hole':
-                    if npth<0:
+        if hasattr(self.pcb, 'module'):
+            for m in self.pcb.module:
+                m_at,m_angle = getAt(m)
+                for p in m.pad:
+                    if 'drill' not in p:
+                        continue
+                    if self.filterNets(p):
                         skip_count += 1
                         continue
-                    ofs = abs(offset)
-                else:
-                    if npth>0:
+                    if p[1]=='np_thru_hole':
+                        if npth<0:
+                            skip_count += 1
+                            continue
+                        ofs = abs(offset)
+                    else:
+                        if npth>0:
+                            skip_count += 1
+                            continue
+                        ofs = -abs(offset)
+                    if p.drill.oval:
+                        if not oval:
+                            continue
+                        size = Vector(p.drill[0],p.drill[1])
+                        w = make_oval(size+Vector(ofs,ofs))
+                        ovals[min(size.x,size.y)].append(w)
+                        oval_count += 1
+                    elif 0 in p.drill and \
+                            p.drill[0]>=minSize and \
+                            (not maxSize or p.drill[0]<=maxSize):
+                        w = make_circle(Vector(p.drill[0]+ofs))
+                        holes[p.drill[0]].append(w)
+                        count += 1
+                    else:
                         skip_count += 1
                         continue
-                    ofs = -abs(offset)
-                if p.drill.oval:
-                    if not oval:
-                        continue
-                    size = Vector(p.drill[0],p.drill[1])
-                    w = make_oval(size+Vector(ofs,ofs))
-                    ovals[min(size.x,size.y)].append(w)
-                    oval_count += 1
-                elif 0 in p.drill and \
-                        p.drill[0]>=minSize and \
-                        (not maxSize or p.drill[0]<=maxSize):
-                    w = make_circle(Vector(p.drill[0]+ofs))
-                    holes[p.drill[0]].append(w)
-                    count += 1
-                else:
-                    skip_count += 1
-                    continue
-                at,angle = getAt(p)
-                angle -= m_angle;
-                if not isZero(angle):
-                    w.rotate(Vector(),Vector(0,0,1),angle)
-                w.translate(at)
-                if m_angle:
-                    w.rotate(Vector(),Vector(0,0,1),m_angle)
-                w.translate(m_at)
+                    at,angle = getAt(p)
+                    angle -= m_angle;
+                    if not isZero(angle):
+                        w.rotate(Vector(),Vector(0,0,1),angle)
+                    w.translate(at)
+                    if m_angle:
+                        w.rotate(Vector(),Vector(0,0,1),m_angle)
+                    w.translate(m_at)
         self._log('pad holes: {}, skipped: {}',count+skip_count,skip_count)
         if oval:
             self._log('oval holes: {}',oval_count)
@@ -1600,12 +1601,18 @@ class KicadFcad:
     def makePads(self,shape_type='face',thickness=0.05,holes=False,
             fit_arcs=True,prefix=''):
 
+
         self._pushLog('making pads...',prefix=prefix)
 
         def _wire(obj,name,label=None,fill=False):
             return self._makeWires(obj,name,fill=fill,label=label, offset=self.pad_inflate)
 
         def _face(obj,name,label=None):
+            if not 'cut_wires' in locals() or not 'cut_non_closed' in locals():
+                self._log("No 'module', creating vars...")
+                cut_wires = []
+                cut_non_closed = defaultdict(list)
+
             objs = _wire(obj,name,label,True)
 
             if not cut_wires and not cut_non_closed:
@@ -1637,70 +1644,94 @@ class KicadFcad:
 
         count = 0
         skip_count = 0
-        for i,m in enumerate(self.pcb.module):
-            ref = ''
-            for t in m.fp_text:
-                if t[0] == 'reference':
-                    ref = t[1]
-                    break;
-            m_at,m_angle = getAt(m)
-            pads = []
-            count += len(m.pad)
+        if hasattr(self.pcb, 'module'):
+            for i,m in enumerate(self.pcb.module):
+                ref = ''
+                for t in m.fp_text:
+                    if t[0] == 'reference':
+                        ref = t[1]
+                        break;
+                m_at,m_angle = getAt(m)
+                pads = []
+                count += len(m.pad)
 
-            cut_wires = []
-            cut_non_closed = defaultdict(list)
+                cut_wires = []
+                cut_non_closed = defaultdict(list)
 
-            self._pushLog('checking edge cuts')
-            self._makeEdgeCuts(m, 'fp', cut_wires, cut_non_closed)
-            self._popLog()
+                self._pushLog('checking edge cuts')
+                self._makeEdgeCuts(m, 'fp', cut_wires, cut_non_closed)
+                self._popLog()
 
-            for j,p in enumerate(m.pad):
-                if self.filterNets(p) or self.filterLayer(p):
-                    skip_count+=1
+                for j,p in enumerate(m.pad):
+                    if self.filterNets(p) or self.filterLayer(p):
+                        skip_count+=1
+                        continue
+
+                    shape = p[2]
+
+                    if shape == 'custom':
+                        w = self._makeCustomPad(p)
+                    else:
+                        try:
+                            make_shape = globals()['make_{}'.format(shape)]
+                        except KeyError:
+                            raise NotImplementedError(
+                                    'pad shape {} not implemented\n'.format(shape))
+                        w = make_shape(Vector(*p.size),p)
+
+                    if not w:
+                        continue
+
+                    # kicad put pad shape offset inside drill element? Why?
+                    if 'drill' in p and 'offset' in p.drill:
+                        w.translate(makeVect(p.drill.offset))
+
+                    at,angle = getAt(p)
+                    angle -= m_angle;
+                    if not isZero(angle):
+                        w.rotate(Vector(),Vector(0,0,1),angle)
+                    w.translate(at)
+
+                    if not self.merge_pads:
+                        pads.append(func(w,'pad',
+                            '{}#{}#{}#{}#{}'.format(i,j,p[0],ref,self.netName(p))))
+                    else:
+                        pads.append(w)
+
+                self._makeShape(m, 'fp', pads)
+
+                if not pads:
                     continue
-
-                shape = p[2]
-
-                if shape == 'custom':
-                    w = self._makeCustomPad(p)
-                else:
-                    try:
-                        make_shape = globals()['make_{}'.format(shape)]
-                    except KeyError:
-                        raise NotImplementedError(
-                                'pad shape {} not implemented\n'.format(shape))
-                    w = make_shape(Vector(*p.size),p)
-
-                if not w:
-                    continue
-
-                # kicad put pad shape offset inside drill element? Why?
-                if 'drill' in p and 'offset' in p.drill:
-                    w.translate(makeVect(p.drill.offset))
-
-                at,angle = getAt(p)
-                angle -= m_angle;
-                if not isZero(angle):
-                    w.rotate(Vector(),Vector(0,0,1),angle)
-                w.translate(at)
 
                 if not self.merge_pads:
-                    pads.append(func(w,'pad',
-                        '{}#{}#{}#{}#{}'.format(i,j,p[0],ref,self.netName(p))))
+                    obj = self._makeCompound(pads,'pads','{}#{}'.format(i,ref))
                 else:
-                    pads.append(w)
+                    obj = func(pads,'pads','{}#{}'.format(i,ref))
+                self._place(obj,m_at,m_angle)
+                objs.append(obj)
+        ###################################################
 
-            self._makeShape(m, 'fp', pads)
+        if hasattr(self.pcb, 'gr_circle'):
+            circles = []
+            self._pushLog('making {} gr_circles'.format(len(self.pcb.gr_circle)))
 
-            if not pads:
-                continue
-
-            if not self.merge_pads:
-                obj = self._makeCompound(pads,'pads','{}#{}'.format(i,ref))
-            else:
-                obj = func(pads,'pads','{}#{}'.format(i,ref))
-            self._place(obj,m_at,m_angle)
-            objs.append(obj)
+            for j,p in enumerate(self.pcb.gr_circle):
+                shape = "gr_circle"
+                if self.filterLayer(p):
+                    continue
+                w = make_gr_circle(p)
+                if not w:
+                    continue
+                circles.append(w)
+                center = makeVect(p.center)
+                end = makeVect(p.end)
+                r = center.distanceToPoint(end)
+                at, angle = getAt(p)
+                self._log("Created circle at ({})->({}) with size {}".format(center, end, r))
+            if (circles):
+                obj = func(circles, 'circles', '{}#{}'.format(1, 'circRef'))
+                objs.append(obj)
+        ###################################################
 
         via_skip = 0
         vias = []
@@ -1977,6 +2008,127 @@ class KicadFcad:
         fitView();
         return objs
 
+    ###########################################################################
+
+    def makePolys(self,shape_type='face',thickness=0.05, fit_arcs=True,
+                    holes=False,prefix=''):
+
+        if not 'gr_poly' in self.pcb:
+            return
+        count = len(self.pcb.gr_poly)
+        self._pushLog('making {} polys...'.format(count),prefix=prefix)
+
+        z = None
+        zone_holes = []
+
+        def _wire(obj,fill=False):
+
+            offset = self.zone_inflate + thickness*0.5
+
+            if not zone_holes or (
+              self.add_feature and self.make_sketch and self.zone_merge_holes):
+                obj = [obj]+zone_holes
+            elif zone_holes:
+                obj = (self._makeWires(obj,'zone_outline'),
+                       self._makeWires(zone_holes,'zone_hole'))
+                return self._makeArea(obj,'zone',offset=offset,
+                        op=1, fill=fill)
+
+            return self._makeWires(obj,'zone',fill=fill,
+                            offset=offset)
+
+
+        def _face(obj):
+            return _wire(obj,True)
+
+        _solid = _face
+
+        try:
+            func = locals()['_{}'.format(shape_type)]
+        except KeyError:
+            raise ValueError('invalid shape type: {}'.format(shape_type))
+
+        objs = []
+        for idx,p in enumerate(self.pcb.gr_poly):
+            if (hasattr(p, 'layer') or hasattr(p, 'layers')) and self.filterLayer(p):
+                continue
+            zone_holes = []
+            table = {}
+            pts = SexpList(p.pts.xy)
+
+            # close the polygon
+            pts._append(p.pts.xy._get(0))
+
+            # `table` uses a pair of vertex as the key to store the index of
+            # an edge.
+            for i in range(len(pts)-1):
+                table[str((pts[i],pts[i+1]))] = i
+
+            # This is how kicad represents holes in zone polygon
+            #  ---------------------------
+            #  |    -----      ----      |
+            #  |    |   |======|  |      |
+            #  |====|   |      |  |      |
+            #  |    -----      ----      |
+            #  |                         |
+            #  ---------------------------
+            # It uses a single polygon with coincide edges of oppsite
+            # direction (shown with '=' above) to dig a hole. And one hole
+            # can lead to another, and so forth. The following `build()`
+            # function is used to recursively discover those holes, and
+            # cancel out those '=' double edges, which will surely cause
+            # problem if left alone. The algorithm assumes we start with a
+            # point of the outer polygon.
+            def build(start,end):
+                results = []
+                while start<end:
+                    # We used the reverse edge as key to search for an
+                    # identical edge of oppsite direction. NOTE: the
+                    # algorithm only works if the following assumption is
+                    # true, that those hole digging double edges are of
+                    # equal length without any branch in the middle
+                    key = str((pts[start+1],pts[start]))
+                    try:
+                        i = table[key]
+                        del table[key]
+                    except KeyError:
+                        # `KeyError` means its a normal edge, add the line.
+                        results.append(Part.makeLine(
+                            makeVect(pts[start]),makeVect(pts[start+1])))
+                        start += 1
+                        continue
+
+                    # We found the start of a double edge, treat all edges
+                    # in between as holes and recurse. Both of the double
+                    # edges are skipped.
+                    h = build(start+1,i)
+                    if h:
+                        zone_holes.append(Part.Wire(h))
+                    start = i+1
+                return results
+
+            edges = build(0,len(pts)-1)
+
+            self._log('region {}/{}, holes: {}',idx+1,count,len(zone_holes))
+
+            objs.append(func(Part.Wire(edges)))
+
+            self._popLog()
+
+        if objs:
+            objs = self._cutHoles(objs,holes,'zones')
+            if shape_type == 'solid':
+                objs = self._makeSolid(objs,'zones',thickness,fit_arcs=fit_arcs)
+            else:
+                objs = self._makeCompound(objs,'zones',
+                                fuse=holes,fit_arcs=fit_arcs)
+            self.setColor(objs,'zone')
+
+        self._popLog('polys done')
+        fitView();
+        return objs
+    ###########################################################################
+
 
     def isBottomLayer(self):
         return self.layer_type == 31
@@ -2002,7 +2154,8 @@ class KicadFcad:
 
         for (name,offset) in (('Pads',thickness),
                               ('Tracks',0.5*thickness),
-                              ('Zones',0)):
+                              ('Zones',0),
+                              ('Polys',thickness)):
 
             obj = getattr(self,'make{}'.format(name))(fit_arcs=sub_fit_arcs,
                         holes=holes,shape_type=shape_type,prefix=None,
@@ -2151,66 +2304,66 @@ class KicadFcad:
             parts = []
         else:
             parts = {}
+        if hasattr(self.pcb, 'module'):
+            for (module_idx,m) in enumerate(self.pcb.module):
+                if unquote(m.layer) != self.layer:
+                    continue
+                ref = '?'
+                value = '?'
+                for t in m.fp_text:
+                    if t[0] == 'reference':
+                        ref = t[1]
+                    if t[0] == 'value':
+                        value = t[1]
 
-        for (module_idx,m) in enumerate(self.pcb.module):
-            if unquote(m.layer) != self.layer:
-                continue
-            ref = '?'
-            value = '?'
-            for t in m.fp_text:
-                if t[0] == 'reference':
-                    ref = t[1]
-                if t[0] == 'value':
-                    value = t[1]
-
-            m_at,m_angle = getAt(m)
-            m_at += Vector(0,0,z)
-            objs = []
-            for (model_idx,model) in enumerate(m.model):
-                path = os.path.splitext(model[0])[0]
-                self._log('loading model {}/{} {} {} {}...',
-                        model_idx,len(m.model), ref,value,model[0])
-                for e in ('.stp','.STP','.step','.STEP'):
-                    filename = os.path.join(self.part_path,path+e)
-                    mobj = loadModel(filename)
-                    if not mobj:
-                        continue
-                    at = product(Vector(*model.at.xyz),Vector(25.4,25.4,25.4))
-                    rot = [-float(v) for v in reversed(model.rotate.xyz)]
-                    pln = Placement(at,Rotation(*rot))
-                    if not self.add_feature:
-                        if combo:
-                            obj = mobj[0].copy()
-                            obj.Placement = pln
+                m_at,m_angle = getAt(m)
+                m_at += Vector(0,0,z)
+                objs = []
+                for (model_idx,model) in enumerate(m.model):
+                    path = os.path.splitext(model[0])[0]
+                    self._log('loading model {}/{} {} {} {}...',
+                            model_idx,len(m.model), ref,value,model[0])
+                    for e in ('.stp','.STP','.step','.STEP'):
+                        filename = os.path.join(self.part_path,path+e)
+                        mobj = loadModel(filename)
+                        if not mobj:
+                            continue
+                        at = product(Vector(*model.at.xyz),Vector(25.4,25.4,25.4))
+                        rot = [-float(v) for v in reversed(model.rotate.xyz)]
+                        pln = Placement(at,Rotation(*rot))
+                        if not self.add_feature:
+                            if combo:
+                                obj = mobj[0].copy()
+                                obj.Placement = pln
+                            else:
+                                obj = {'shape':mobj[0].copy(),'color':mobj[1]}
+                                obj['shape'].Placement = pln
+                            objs.append(obj)
                         else:
-                            obj = {'shape':mobj[0].copy(),'color':mobj[1]}
-                            obj['shape'].Placement = pln
-                        objs.append(obj)
-                    else:
-                        obj = self._makeObject('Part::Feature','model',
-                            label='{}#{}#{}'.format(module_idx,model_idx,ref),
-                            links='Shape',shape=mobj[0])
-                        obj.ViewObject.DiffuseColor = mobj[1]
-                        obj.Placement = pln
-                        objs.append(obj)
-                    self._log('loaded')
-                    break
+                            obj = self._makeObject('Part::Feature','model',
+                                label='{}#{}#{}'.format(module_idx,model_idx,ref),
+                                links='Shape',shape=mobj[0])
+                            obj.ViewObject.DiffuseColor = mobj[1]
+                            obj.Placement = pln
+                            objs.append(obj)
+                        self._log('loaded')
+                        break
 
-            if not objs:
-                continue
+                if not objs:
+                    continue
 
-            pln = Placement(m_at,Rotation(Vector(0,0,1),m_angle))
-            if at_bottom:
-                pln = pln.multiply(Placement(Vector(),
-                                    Rotation(Vector(1,0,0),180)))
+                pln = Placement(m_at,Rotation(Vector(0,0,1),m_angle))
+                if at_bottom:
+                    pln = pln.multiply(Placement(Vector(),
+                                        Rotation(Vector(1,0,0),180)))
 
-            label = '{}#{}'.format(module_idx,ref)
-            if self.add_feature or combo:
-                obj = self._makeCompound(objs,'part',label,force=True)
-                obj.Placement = pln
-                parts.append(obj)
-            else:
-                parts[label] = {'pos':pln, 'models':objs}
+                label = '{}#{}'.format(module_idx,ref)
+                if self.add_feature or combo:
+                    obj = self._makeCompound(objs,'part',label,force=True)
+                    obj.Placement = pln
+                    parts.append(obj)
+                else:
+                    parts[label] = {'pos':pln, 'models':objs}
 
         if parts:
             if combo:
