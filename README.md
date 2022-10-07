@@ -16,7 +16,7 @@ The fcad_pcb macro is written in Python and requires **FreeCAD 0.17** or later t
 1. Clone this repo into your freecad macro directory. To check what the default path of your macro directory is go to dropdown `Macro` > `Macros..` and find the path in the field User macros location
     ```bash
     cd <path/to/your/macros/directory>
-    git clone https://github.com/realthunder/fcad_pcb/
+    git clone https://github.com/nico-arnold/fcad_pcb
     ```
 2. Enter the locally cloned repository
     ```bash
